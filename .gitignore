@@ -1,0 +1,4 @@
+node_modules/
+dist/
+*.bak
+50-Knowledge/

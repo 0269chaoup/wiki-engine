@@ -60,8 +60,8 @@ export function dedupScan(newPages: WikiPage[], existingPages: WikiPage[]): Dedu
   return matches;
 }
 
-/** Fuzzy similarity score between two titles */
-function fuzzyScore(a: string, b: string, tagsA: string[], tagsB: string[]): { score: number; reasons: string[] } {
+/** Fuzzy similarity score between two titles (exported for stage2-align reuse) */
+export function fuzzyScore(a: string, b: string, tagsA: string[], tagsB: string[]): { score: number; reasons: string[] } {
   const na = normalize(a);
   const nb = normalize(b);
   const reasons: string[] = [];

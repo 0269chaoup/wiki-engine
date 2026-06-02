@@ -7,6 +7,7 @@ export interface LLMOptions {
   apiProvider?: "anthropic" | "openai";
   model?: string;
   apiKey?: string;
+  baseUrl?: string;
 }
 
 /**
@@ -27,6 +28,7 @@ export function createLLM(opts: LLMOptions): LLMProvider | null {
       provider: opts.apiProvider ?? "anthropic",
       model: opts.model ?? "claude-sonnet-4-6",
       apiKey: opts.apiKey,
+      baseUrl: opts.baseUrl,
     });
   } catch {
     return null;

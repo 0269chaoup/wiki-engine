@@ -23,10 +23,12 @@ export interface WikiPage {
 
 export interface ExtractedEntity {
   name: string;
+  aliases: string[];
   type: PageType;
   description: string;
   tags: string[];
   relations: { target: string; relation: string }[];
+  keyQuotes: string[];
 }
 
 export interface ExtractedEvent {
@@ -77,4 +79,70 @@ export interface GraphEdge {
 export interface Graph {
   nodes: Map<string, GraphNode>;
   edges: GraphEdge[];
+}
+
+/** ── Pipeline Types ────────────────────────────────────────────────────── */
+
+export interface SourceDocument {
+  text: string;
+  title: string;
+  url?: string;
+  captured_at: string;       // ISO date
+  source_type: 'file' | 'url' | 'stdin';
+}
+
+export interface VaultIndexEntry {
+  title: string;
+  aliases: string[];
+  tags: string[];
+  type: PageType;
+  path: string;              // relative to vault root
+}
+
+export type VaultIndex = VaultIndexEntry[];
+
+export interface AlignmentAction {
+  item_name: string;
+  action: 'create' | 'merge' | 'rename';
+  target_existing?: string;  // merge/rename target path
+  resolved_name: string;     // final name used
+  reason: string;
+}
+
+export interface AlignmentConflict {
+  new_name: string;
+  candidates: { title: string; path: string; score: number }[];
+  reason: string;
+}
+
+export interface AlignedExtraction {
+  items: ExtractedEntity[];
+  events: ExtractedEvent[];
+  actions: AlignmentAction[];
+  conflicts: AlignmentConflict[];
+}
+
+export interface BatchManifest {
+  batch_id: string;
+  source: SourceDocument;
+  created_at: string;
+  items_count: { entities: number; events: number; stories: number; concepts: number };
+  alignment_actions: AlignmentAction[];
+  status: 'pending' | 'learning' | 'archived';
+}
+
+export interface InboxBatch {
+  batch_id: string;
+  base_dir: string;          // 00-Inbox/wiki-engine/{batch_id}/
+  pages: { page: { frontmatter: Record<string, any>; content: string }; path: string }[];
+  manifest: BatchManifest;
+}
+
+export interface ArchiveResult {
+  batch_id: string;
+  archived: { file: string; target: string; action: string }[];
+  skipped: { file: string; reason: string }[];
+  warnings: string[];
+  moc_updates: { moc: string; action: string; detail?: string }[];
+  daily_log?: string;
 }

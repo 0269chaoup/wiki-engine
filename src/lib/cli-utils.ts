@@ -17,6 +17,7 @@ export function buildContext(opts: any): CLIContext {
     apiProvider: opts.apiProvider ?? "anthropic",
     model: opts.model,
     apiKey: opts.apiKey,
+    baseUrl: opts.baseUrl,
   };
   const llm = createLLM(llmOpts);
   return { vault, llm, verbose: opts.verbose ?? false };

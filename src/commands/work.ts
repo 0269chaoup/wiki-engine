@@ -1,3 +1,16 @@
+/**
+ * @file work.ts
+ * @description 工作任务管理命令
+ * 管理 30-Projects/Work 目录下的工作/项目笔记，提供以下子命令：
+ * - create: 创建新工作笔记
+ * - validate: 验证工作文件规范
+ * - index: 生成/更新项目索引
+ * - archive: 归档项目
+ * - task: 任务管理（[!todo] 格式）
+ * - fix: 修复 frontmatter
+ * - normalize: 全面规范化
+ * - report: 项目状态报告
+ */
 import { Command } from "commander";
 import { buildContext, row } from "../lib/cli-utils.js";
 import {
@@ -11,11 +24,15 @@ import {
   createTaskNote,
 } from "../lib/work.js";
 
+/**
+ * @description 创建 work 命令组，管理 30-Projects/Work 下的工作笔记
+ * @returns {Command} 配置好的 Commander 命令实例
+ */
 export function workCommand(): Command {
   const work = new Command("work")
     .description("Manage work/project notes in 30-Projects/Work");
 
-  // ── work create ─────────────────────────────────────────────────────────
+  // ── work create —— 创建新工作笔记 ──────────────────────────────────
   work
     .command("create")
     .description("Create a new work note with proper frontmatter")
@@ -40,7 +57,7 @@ export function workCommand(): Command {
       }
     });
 
-  // ── work validate ───────────────────────────────────────────────────────
+  // ── work validate —— 验证工作文件 ──────────────────────────────────
   work
     .command("validate")
     .description("Validate work files — frontmatter, type, status")
@@ -59,6 +76,7 @@ export function workCommand(): Command {
         return;
       }
 
+      // 按文件分组显示问题
       const byFile = new Map<string, typeof result.issues>();
       for (const issue of result.issues) {
         if (opts.errorsOnly && issue.severity === "warning") continue;
@@ -76,13 +94,14 @@ export function workCommand(): Command {
         console.log();
       }
 
+      // 输出汇总统计
       console.log("═".repeat(50));
       console.log(
         `Total: ${result.totalFiles} | Clean: ${result.clean} | Errors: ${result.errors} | Warnings: ${result.warnings}`
       );
     });
 
-  // ── work index ──────────────────────────────────────────────────────────
+  // ── work index —— 生成/更新项目索引 ─────────────────────────────────
   work
     .command("index")
     .description("Generate/update INDEX.md for each project")
@@ -101,7 +120,7 @@ export function workCommand(): Command {
       console.log(`\n✅ Updated ${results.length} project index(es).`);
     });
 
-  // ── work archive ────────────────────────────────────────────────────────
+  // ── work archive —— 归档项目 ────────────────────────────────────────
   work
     .command("archive")
     .description("Archive a project (compact TechNotes into post-mortem)")
@@ -111,6 +130,7 @@ export function workCommand(): Command {
     .action(async (project, opts) => {
       const ctx = buildContext(work.parent!.opts());
 
+      // 干运行模式：只预览将要归档的文件
       if (opts.dryRun) {
         const report = await generateReport(ctx.vault.root);
         const proj = report.projects.find((p) => p.name === project);
@@ -118,6 +138,7 @@ export function workCommand(): Command {
           console.log(`\n❌ Project not found: ${project}`);
           return;
         }
+        // 过滤出未归档的文件
         const nonArchived = proj.files.filter(
           (f) => f.status !== "🗃️ Archived"
         );
@@ -127,6 +148,7 @@ export function workCommand(): Command {
         for (const f of nonArchived) {
           console.log(`  📄 ${f.title} (${f.status || "no status"})`);
         }
+        // 如果启用 compact 模式，显示将压缩的 TechNote 数量
         if (opts.compact) {
           const techNotes = proj.files.filter((f) => f.type === "TechNote");
           console.log(`\n📦 Would compact ${techNotes.length} TechNotes into post-mortem`);
@@ -144,18 +166,21 @@ export function workCommand(): Command {
       }
     });
 
-  // ── work task ──────────────────────────────────────────────────────────
+  // ── work task —— 任务管理子命令组 ──────────────────────────────────
   const task = work.command("task").description("Task management with [!todo] callout format");
 
+  // work task create —— 创建任务笔记
   task
     .command("create")
     .description("Create a task note with [!todo] callout template")
     .argument("<project>", "Project name")
     .argument("<title>", "Task note title")
+    // --group 支持多次指定，收集到数组中
     .option("--group <name>", "Task group name (can repeat)", (val: string, prev: string[]) => [...prev, val], [] as string[])
     .action(async (project, title, opts) => {
       const ctx = buildContext(work.parent!.opts());
 
+      // 构建任务组结构
       const groups = opts.group.length > 0
         ? opts.group.map((name: string) => ({
             name,
@@ -176,6 +201,7 @@ export function workCommand(): Command {
       }
     });
 
+  // work task template —— 显示任务格式模板
   task
     .command("template")
     .description("Show the [!todo] task format template")
@@ -196,7 +222,7 @@ export function workCommand(): Command {
 `);
     });
 
-  // ── work fix ────────────────────────────────────────────────────────────
+  // ── work fix —— 修复工作文件的 frontmatter ──────────────────────────
   work
     .command("fix")
     .description("Fix missing/wrong frontmatter in work files (auto-migrate old status)")
@@ -216,6 +242,7 @@ export function workCommand(): Command {
         return;
       }
 
+      // 逐文件输出修复详情
       let totalFixes = 0;
       for (const r of results) {
         console.log(`📄 ${r.file}`);
@@ -230,7 +257,8 @@ export function workCommand(): Command {
       console.log(`Files fixed: ${results.length} | Total fixes: ${totalFixes}`);
     });
 
-  // ── work normalize ─────────────────────────────────────────────────────
+  // ── work normalize —— 全面规范化 ────────────────────────────────────
+  // 修复类型（→ Task/TechNote）、移除 Knowledge 专属字段、统一 created 格式、移动孤立文件
   work
     .command("normalize")
     .description(
@@ -255,6 +283,7 @@ export function workCommand(): Command {
         return;
       }
 
+      // 逐文件输出规范化变更
       let totalChanges = 0;
       for (const r of results) {
         console.log(`📄 ${r.file}`);
@@ -277,7 +306,7 @@ export function workCommand(): Command {
       }
     });
 
-  // ── work report ─────────────────────────────────────────────────────────
+  // ── work report —— 项目状态报告 ────────────────────────────────────
   work
     .command("report")
     .description("Project status report — overview of all projects")
@@ -287,6 +316,7 @@ export function workCommand(): Command {
       console.log("\n📊 Work Projects Report\n");
       const report = await generateReport(ctx.vault.root);
 
+      // 遍历每个项目，显示状态分布
       for (const proj of report.projects) {
         const statusLine = Object.entries(proj.statusBreakdown)
           .map(([s, c]) => `${s}:${c}`)
@@ -294,7 +324,7 @@ export function workCommand(): Command {
         console.log(`📁 ${proj.name} (${proj.fileCount} files)`);
         console.log(`   ${statusLine}`);
 
-        // Show blocked items
+        // 显示被阻塞的任务
         if (proj.blockedItems.length > 0) {
           console.log(`   ⛔ Blocked:`);
           for (const item of proj.blockedItems) {
@@ -304,6 +334,7 @@ export function workCommand(): Command {
         console.log();
       }
 
+      // 显示不属于任何项目的孤立文件
       if (report.orphanFiles.length > 0) {
         console.log(`📎 Root-level files (${report.orphanFiles.length}):`);
         for (const f of report.orphanFiles) {
@@ -312,6 +343,7 @@ export function workCommand(): Command {
         console.log();
       }
 
+      // 输出总览
       console.log("═".repeat(50));
       console.log(
         `Total: ${report.totalFiles} files across ${report.totalProjects} projects`

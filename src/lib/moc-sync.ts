@@ -1,24 +1,51 @@
+/**
+ * @file MOC（Map of Content）同步模块
+ *
+ * 负责将知识文件的 wikilink 同步到对应的 MOC 索引文件中。
+ *
+ * 同步逻辑：
+ * 1. 读取文件的 frontmatter → 提取 type、domain、title
+ * 2. 确定目标 MOC 文件：MOCs/MOC-{domain}.md
+ * 3. 检查 MOC 中是否已包含 [[title]]
+ * 4. 如未包含，在 MOC 末尾追加 `- [[title]] — {摘要}`
+ * 5. 写回 MOC 文件
+ *
+ * 支持单文件同步和批量同步两种模式。
+ */
+
 import fs from "fs";
 import path from "path";
 import matter from "gray-matter";
 import { glob } from "glob";
 
+/**
+ * MOC 同步结果接口
+ * 表示单个文件的 MOC 同步操作结果
+ */
 export interface MocSyncResult {
+  /** 被同步的源文件路径 */
   file: string;
+  /** 目标 MOC 文件名 */
   moc: string;
+  /** 同步动作：已添加、已存在链接、无对应 MOC、出错 */
   action: "added" | "already_linked" | "no_moc" | "error";
+  /** 详细信息（可选） */
   detail?: string;
 }
 
 /**
- * Sync a knowledge file's link into its corresponding MOC.
+ * @description 将单个知识文件的链接同步到对应的 MOC 文件中
  *
- * Logic:
- * 1. Read file frontmatter → extract type, domain, title
- * 2. Determine target MOC: MOCs/MOC-{domain}.md
- * 3. Check if MOC already contains [[title]]
- * 4. If not, add `- [[title]] — {one-liner}` under the right section
- * 5. Write MOC back
+ * 同步流程：
+ * 1. 读取文件 frontmatter → 提取 type、domain、title
+ * 2. 确定目标 MOC 路径：50-Knowledge/MOCs/MOC-{domain}.md
+ * 3. 检查 MOC 中是否已包含 [[title]] 的 wikilink
+ * 4. 如未包含，在 MOC 文件末尾追加条目
+ * 5. 写回 MOC 文件
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param filePath - 源文件相对于 vault 根目录的路径
+ * @returns MOC 同步结果
  */
 export async function syncFileToMoc(
   vaultRoot: string,
@@ -29,21 +56,23 @@ export async function syncFileToMoc(
     return { file: filePath, moc: "", action: "error", detail: "File not found" };
   }
 
-    // Parse frontmatter
-    const raw = fs.readFileSync(abs, "utf-8");
-    let data: Record<string, unknown>;
-    try {
-      ({ data } = matter(raw));
-    } catch (e) {
-      return { file: filePath, moc: "", action: "error", detail: `YAML parse error: ${(e as Error).message?.slice(0, 80)}` };
-    }
+  /** 解析 frontmatter 元数据 */
+  const raw = fs.readFileSync(abs, "utf-8");
+  let data: Record<string, unknown>;
+  try {
+    ({ data } = matter(raw));
+  } catch (e) {
+    return { file: filePath, moc: "", action: "error", detail: `YAML parse error: ${(e as Error).message?.slice(0, 80)}` };
+  }
 
+  /** 提取关键字段（提供默认值） */
   const title = String(data.title ?? path.basename(filePath, ".md"));
   const type = String(data.type ?? "Concept");
   const domain = String(data.domain ?? "综合");
+  /** 从文件内容中提取 One-Liner 摘要 */
   const oneliner = extractOneliner(raw);
 
-  // Determine MOC path
+  /** 确定目标 MOC 文件路径 */
   const mocFileName = `MOC-${domain}.md`;
   const mocPath = path.join(vaultRoot, "50-Knowledge", "MOCs", mocFileName);
 
@@ -51,17 +80,16 @@ export async function syncFileToMoc(
     return { file: filePath, moc: mocFileName, action: "no_moc", detail: `MOC not found: ${mocPath}` };
   }
 
-  // Read MOC
+  /** 读取 MOC 文件内容 */
   const mocRaw = fs.readFileSync(mocPath, "utf-8");
 
-  // Check if already linked
+  /** 检查 MOC 中是否已包含该页面的 wikilink */
   const linkPattern = new RegExp(`\\[\\[${escapeRegex(title)}[\\]|]`);
   if (linkPattern.test(mocRaw)) {
     return { file: filePath, moc: mocFileName, action: "already_linked" };
   }
 
-  // Find insertion point — add after the last section header that makes sense
-  // Strategy: find the last `## ` section, and append before the next `---` or end
+  /** 页面类型 → emoji 映射 */
   const typeEmoji: Record<string, string> = {
     Entity: "🏷️",
     Event: "⚡",
@@ -69,9 +97,10 @@ export async function syncFileToMoc(
     Concept: "💡",
   };
   const emoji = typeEmoji[type] ?? "💡";
+  /** 构建 MOC 条目：- [[title]] — 摘要 */
   const entry = `- [[${title}]]${oneliner ? ` — ${oneliner}` : ""}`;
 
-  // Insert at end of file (before trailing whitespace)
+  /** 在 MOC 文件末尾追加条目 */
   const updated = mocRaw.trimEnd() + "\n\n" + entry + "\n";
 
   fs.writeFileSync(mocPath, updated, "utf-8");
@@ -80,7 +109,14 @@ export async function syncFileToMoc(
 }
 
 /**
- * Batch sync all files in Permanent/ to their MOCs.
+ * @description 批量同步 Permanent 目录下所有文件到对应的 MOC
+ *
+ * 遍历指定子目录（默认 Stories/Events/Entities/Concepts）中的所有 .md 文件，
+ * 逐个执行 MOC 同步。
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param opts - 选项：dryRun（模拟运行）、dirs（自定义子目录列表）
+ * @returns 所有文件的同步结果数组
  */
 export async function syncAllToMocs(
   vaultRoot: string,
@@ -98,7 +134,7 @@ export async function syncAllToMocs(
 
     for (const f of files) {
       if (opts?.dryRun) {
-        // Just check, don't write
+        /** 模拟运行模式：只检查不写入 */
         const abs = path.join(vaultRoot, f);
         const raw = fs.readFileSync(abs, "utf-8");
         let data: Record<string, unknown>;
@@ -126,6 +162,7 @@ export async function syncAllToMocs(
           action: linked ? "already_linked" : "added",
         });
       } else {
+        /** 正式模式：执行同步 */
         const result = await syncFileToMoc(vaultRoot, f);
         results.push(result);
       }
@@ -135,12 +172,25 @@ export async function syncAllToMocs(
   return results;
 }
 
-/** Extract One-Liner from 归档信息 block */
+/**
+ * @description 从文件内容中提取 One-Liner 摘要
+ *
+ * 匹配格式：**One-Liner**: 摘要内容
+ *
+ * @param content - 文件原始内容
+ * @returns One-Liner 摘要文本，未找到则返回空字符串
+ */
 function extractOneliner(content: string): string {
   const m = content.match(/\*\*One-Liner\*\*:\s*(.+?)(?:\n|$)/);
   return m?.[1]?.trim() ?? "";
 }
 
+/**
+ * @description 转义正则表达式特殊字符
+ *
+ * @param s - 原始字符串
+ * @returns 转义后的安全字符串
+ */
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

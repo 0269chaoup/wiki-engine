@@ -1,3 +1,13 @@
+/**
+ * @file ingest.ts
+ * @description 内容摄入管线入口命令
+ * 将外部内容（文件/URL）摄入到知识库的多阶段管线：
+ * Stage 1: 内容提取（实体/事件/概念）
+ * Stage 2: Vault 对齐（检测已有文档，避免重复）
+ * Stage 3: 页面生成（LLM 生成 wiki 页面）
+ * Stage 4: 分发到 Inbox（待学习确认）
+ * 支持 URL 网页剪藏、文件摄入、断点续传（finalize）等模式。
+ */
 import { Command } from "commander";
 import fs from "fs";
 import path from "path";
@@ -10,6 +20,10 @@ import { dispatchToInbox } from "../lib/stage4-dispatch.js";
 import { generateBatchId } from "../lib/manifest.js";
 import type { WikiPage, SourceDocument, ExtractedEntity, ExtractedEvent } from "../lib/types.js";
 
+/**
+ * @description 创建 ingest 子命令，作为内容摄入的主入口
+ * @returns {Command} 配置好的 Commander 命令实例
+ */
 export function ingestCommand(): Command {
   const cmd = new Command("ingest")
     .description("Ingest content → Inbox (default) or Permanent (--no-inbox)")
@@ -19,12 +33,12 @@ export function ingestCommand(): Command {
     .option("--no-pages", "skip wiki page generation (analyze only)")
     .option("--out <dir>", "output directory (legacy mode with --no-inbox)", "wiki")
     .option("--create-stubs", "create stub pages for all mentioned entities")
-    // ─── Inbox-first options ───
+    // ─── Inbox-first 模式选项 ───
     .option("--no-inbox", "skip Inbox, write directly to --out (legacy behavior)")
     .option("--batch-id <id>", "custom batch ID (default: auto-generated)")
     .option("--stop-after <stage>", "pause after stage: extraction | alignment")
     .option("--finalize <json>", "resume from extraction result (JSON file or stdin)")
-    // ─── URL → Sources mode ───
+    // ─── URL → Sources 模式选项 ───
     .option("--url <url>", "clip a web page from this URL")
     .option("--to-sources", "save clipped content to 50-Knowledge/Sources/")
     .option("--selector <css>", "CSS selector for content extraction (override auto-detect)")
@@ -32,17 +46,17 @@ export function ingestCommand(): Command {
     .action(async (targetPath: string | undefined, opts, cmd) => {
       const ctx = buildContext(cmd.parent.opts());
 
-      // ─── URL → Sources mode (unchanged) ───
+      // ─── URL → Sources 模式：将网页剪藏到 Sources 目录 ───
       if (opts.url || opts.toSources) {
         return handleClipToSources(opts, ctx);
       }
 
-      // ─── Finalize mode: resume from extraction ───
+      // ─── Finalize 模式：从提取结果断点续传 ───
       if (opts.finalize) {
         return handleFinalize(opts, ctx);
       }
 
-      // ─── File ingest ───
+      // ─── 文件摄入模式 ───
       if (!targetPath) {
         console.error("❌ Please provide a <path> or use --url <url>");
         process.exit(1);
@@ -53,8 +67,13 @@ export function ingestCommand(): Command {
   return cmd;
 }
 
-// ─── URL → Sources handler (unchanged) ─────────────────────────────
+// ─── URL → Sources 处理器：网页剪藏 ─────────────────────────────────
 
+/**
+ * @description 处理 URL 网页剪藏，将内容保存到 50-Knowledge/Sources/ 目录
+ * @param opts - 命令行选项（url, selector, title, dryRun 等）
+ * @param ctx - CLI 上下文
+ */
 async function handleClipToSources(opts: any, ctx: any) {
   const url = opts.url;
   if (!url) {
@@ -62,6 +81,7 @@ async function handleClipToSources(opts: any, ctx: any) {
     process.exit(1);
   }
 
+  // 获取 vault 根目录（支持多种来源）
   const vaultRoot = ctx?.vault?.root ?? ctx?.vaultRoot ?? process.env.OBSIDIAN_VAULT ?? process.cwd();
   const sourcesDir = path.join(vaultRoot, "50-Knowledge", "Sources");
 
@@ -69,18 +89,21 @@ async function handleClipToSources(opts: any, ctx: any) {
   console.log(`📂 Target:   ${sourcesDir}\n`);
 
   try {
+    // 执行网页内容提取
     const result = await clipWebPage({
       url,
       selector: opts.selector,
       title: opts.title,
     });
 
+    // 输出提取摘要信息
     row("Title", result.title || "(none)", "36");
     row("Author", result.author || "(none)", "33");
     row("Method", result.method, "32");
     row("Content", `${result.content.length} chars`, "36");
     row("Word count", `${result.wordCount}`, "33");
 
+    // 干运行模式：只显示预览不写入
     if (opts.dryRun) {
       console.log("\n(dry-run: no files written)\n");
       console.log("=== Content preview (first 2000 chars) ===\n");
@@ -88,16 +111,19 @@ async function handleClipToSources(opts: any, ctx: any) {
       return;
     }
 
+    // 确保 Sources 目录存在
     if (!fs.existsSync(sourcesDir)) {
       fs.mkdirSync(sourcesDir, { recursive: true });
     }
 
+    // 生成安全的文件名（移除特殊字符）
     const safeTitle = (opts.title || result.title || "untitled")
       .replace(/[/\\:*?"<>|]/g, "-")
       .replace(/\s+/g, " ")
       .trim();
     const filename = `${safeTitle}.md`;
 
+    // 构建包含 frontmatter 的完整 Markdown 内容
     const captured = new Date().toISOString().split("T")[0];
     const frontmatter = [
       "---",
@@ -119,6 +145,7 @@ async function handleClipToSources(opts: any, ctx: any) {
     row("Path", outPath, "36");
     row("Size", `${fullContent.length} chars`, "33");
 
+    // 更新 Sources 目录的索引文件
     updateSourcesMoc(sourcesDir, filename, opts.title || result.title || "untitled");
   } catch (err) {
     console.error(`\n❌ Clip failed: ${(err as Error).message}`);
@@ -126,11 +153,19 @@ async function handleClipToSources(opts: any, ctx: any) {
   }
 }
 
+/**
+ * @description 更新 Sources 目录的 MOC 索引文件（00-INDEX.md）
+ * 如果索引不存在则创建，存在则追加新条目
+ * @param {string} sourcesDir - Sources 目录路径
+ * @param {string} filename - 新增文件名
+ * @param {string} title - 文章标题
+ */
 function updateSourcesMoc(sourcesDir: string, filename: string, title: string) {
   const indexPath = path.join(sourcesDir, "00-INDEX.md");
   const wikilink = `[[${filename.replace(/\.md$/, "")}]]`;
 
   if (!fs.existsSync(indexPath)) {
+    // 索引不存在，创建新的 MOC 索引文件
     const content = [
       "---",
       "type: MOC",
@@ -149,6 +184,7 @@ function updateSourcesMoc(sourcesDir: string, filename: string, title: string) {
     fs.writeFileSync(indexPath, content, "utf-8");
     console.log("   📝 Created Sources/00-INDEX.md");
   } else {
+    // 索引已存在，检查是否已有该链接，没有则追加
     const existing = fs.readFileSync(indexPath, "utf-8");
     if (!existing.includes(wikilink)) {
       const updated = existing.replace(
@@ -161,13 +197,20 @@ function updateSourcesMoc(sourcesDir: string, filename: string, title: string) {
   }
 }
 
-// ─── Finalize handler: resume from extraction ─────────────────────
+// ─── Finalize 处理器：从提取结果断点续传 ─────────────────────────────
 
+/**
+ * @description 从之前的提取结果（JSON）恢复执行管线后续阶段
+ * 跳过 Stage 1（提取），直接执行 Stage 2（对齐）→ Stage 3（生成）→ Stage 4（分发）
+ * @param opts - 命令行选项
+ * @param ctx - CLI 上下文
+ */
 async function handleFinalize(opts: any, ctx: any) {
   let extractionJson: string;
 
+  // 从 stdin 或文件读取提取结果 JSON
   if (opts.finalize === "-") {
-    // Read from stdin
+    // 从标准输入读取
     extractionJson = fs.readFileSync("/dev/stdin", "utf-8");
   } else {
     const filePath = path.resolve(opts.finalize);
@@ -178,6 +221,7 @@ async function handleFinalize(opts: any, ctx: any) {
     extractionJson = fs.readFileSync(filePath, "utf-8");
   }
 
+  // 解析提取结果 JSON
   let extraction: { entities: ExtractedEntity[]; events: ExtractedEvent[]; source: SourceDocument };
   try {
     extraction = JSON.parse(extractionJson);
@@ -192,7 +236,8 @@ async function handleFinalize(opts: any, ctx: any) {
 
   console.log("\n🔄 Finalizing from extraction result...\n");
 
-  // Stage 2: Vault Alignment
+  // ─── Stage 2: Vault 对齐 ───
+  // 将提取的实体/事件与已有文档进行对齐，决定创建或合并
   console.log("   📐 Stage 2: Vault Alignment");
   const aligned = await alignToVault(extraction.entities, extraction.events, vault);
 
@@ -200,6 +245,7 @@ async function handleFinalize(opts: any, ctx: any) {
   row("Merge", aligned.actions.filter(a => a.action === "merge").length, "33");
   row("Conflicts", aligned.conflicts.length, "31");
 
+  // 输出冲突信息
   if (aligned.conflicts.length > 0) {
     console.log("\n   ⚠️  Conflicts (need resolution):");
     for (const c of aligned.conflicts) {
@@ -207,14 +253,17 @@ async function handleFinalize(opts: any, ctx: any) {
     }
   }
 
-  // Stage 3: Page Generation
+  // ─── Stage 3: 页面生成 ───
+  // 使用 LLM 为每个实体/概念/事件生成 wiki 页面
   console.log("\n   📝 Stage 3: Page Generation");
+  // 截断过长的源材料以控制 token 用量
   const truncatedSource = extraction.source.text.length > 8000
     ? extraction.source.text.slice(0, 8000) + "\n\n[... 源材料已截断 ...]"
     : extraction.source.text;
 
   const pages: { frontmatter: Record<string, any>; content: string }[] = [];
 
+  // 为实体和概念生成页面
   for (const item of aligned.items) {
     try {
       const { CONCEPT_PROMPT, ENTITY_PROMPT, GENERATE_SYSTEM } = await import("../lib/ingest.js");
@@ -231,6 +280,7 @@ async function handleFinalize(opts: any, ctx: any) {
     }
   }
 
+  // 为事件生成页面
   for (const event of aligned.events) {
     try {
       const { EVENT_PROMPT, GENERATE_SYSTEM } = await import("../lib/ingest.js");
@@ -251,13 +301,14 @@ async function handleFinalize(opts: any, ctx: any) {
     }
   }
 
-  // Stage 4: Inbox Dispatch
+  // ─── Stage 4: 分发到 Inbox ───
+  // 将生成的页面和元数据写入 Inbox 批次目录
   console.log("\n   📥 Stage 4: Inbox Dispatch");
   const batch = dispatchToInbox(
     vaultRoot,
     extraction.source,
     pages,
-    [], // stories (handled separately if needed)
+    [], // stories（如果需要可单独处理）
     extraction.entities,
     extraction.events,
     aligned.actions,
@@ -271,8 +322,14 @@ async function handleFinalize(opts: any, ctx: any) {
   console.log(`\n   学习完成后运行: wiki-engine archive --batch ${batch.batch_id}`);
 }
 
-// ─── File ingest (Inbox-first) ─────────────────────────────────────
+// ─── 文件摄入（Inbox-first 模式）─────────────────────────────────────
 
+/**
+ * @description 处理文件/目录摄入，执行完整的 Inbox-first 管线
+ * @param {string} targetPath - 要摄入的文件或目录路径
+ * @param opts - 命令行选项
+ * @param ctx - CLI 上下文
+ */
 async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
   const absPath = path.resolve(targetPath);
   if (!fs.existsSync(absPath)) {
@@ -281,24 +338,28 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
   }
 
   const vaultRoot = ctx?.vault?.root ?? ctx?.vaultRoot ?? process.env.OBSIDIAN_VAULT ?? process.cwd();
-  const useInbox = opts.inbox !== false; // --no-inbox sets opts.inbox = false
+  const useInbox = opts.inbox !== false; // --no-inbox 设置 opts.inbox = false
 
-  // Gather files to ingest
+  // 收集要摄入的文件列表
   const files: string[] = [];
   const stat = fs.statSync(absPath);
   if (stat.isDirectory()) {
+    // 目录模式：递归查找所有 .md 文件
     const { glob } = await import("glob");
     const found = await glob("**/*.md", { cwd: absPath, absolute: true });
     files.push(...found);
   } else {
+    // 单文件模式
     files.push(absPath);
   }
 
   console.log(`\n📥 Ingesting ${files.length} file(s)${useInbox ? " → Inbox" : " → Permanent"}...\n`);
 
+  // 扫描已有页面用于去重检测
   const existingPages = await ctx.vault.scan();
   console.log(`   Existing pages in vault: ${existingPages.length}\n`);
 
+  // 逐个文件执行摄入管线
   for (const file of files) {
     const content = fs.readFileSync(file, "utf-8");
     const title = path.basename(file, ".md");
@@ -310,13 +371,14 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
       console.log("   🤖 Agent mode — prompt will be sent to Helios for analysis\n");
     }
 
-    // Run ingest pipeline (Stage 1: Extraction)
+    // ─── Stage 1: 内容提取 ───
+    // 使用 LLM 从文本中提取实体、事件、概念等
     const result = await ingestText(content, llm, title, {
       skipStory: opts.story === false,
       generatePages: opts.pages !== false,
     });
 
-    // Report extraction results
+    // 输出提取结果统计
     console.log(`\n   📊 Extracted:`);
     row("Entities", result.entities.filter(e => e.type === "entity").length, "36");
     row("Concepts", result.entities.filter(e => e.type === "concept").length, "33");
@@ -324,7 +386,7 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
     row("Stories", result.stories.length, "36");
     row("Pages to create", result.pages.length, "33");
 
-    // Show aliases
+    // 显示发现的别名
     const withAliases = result.entities.filter(e => e.aliases && e.aliases.length > 0);
     if (withAliases.length > 0) {
       console.log(`\n   📛 Aliases found:`);
@@ -333,7 +395,7 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
       }
     }
 
-    // Stop-after: extraction
+    // ─── 断点：提取完成后暂停（便于人工审查/编辑）───
     if (opts.stopAfter === "extraction") {
       const source: SourceDocument = {
         text: content,
@@ -348,6 +410,7 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
         source,
       };
 
+      // 将提取结果保存为 JSON，便于后续用 --finalize 恢复
       const outPath = path.resolve(`.extraction-${title}.json`);
       fs.writeFileSync(outPath, JSON.stringify(extractionOutput, null, 2), "utf-8");
       console.log(`\n   ⏸️  Stopped after extraction. Output: ${outPath}`);
@@ -356,15 +419,15 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
       return;
     }
 
-    // If --no-inbox: legacy behavior (write to --out)
+    // ─── 旧版模式：直接写入 --out 目录 ───
     if (!useInbox) {
       await writeLegacy(result, opts, ctx);
       continue;
     }
 
-    // ─── Inbox-first pipeline ───
+    // ─── Inbox-first 管线 ───
 
-    // Stage 2: Vault Alignment
+    // ─── Stage 2: Vault 对齐 ───
     console.log(`\n   📐 Stage 2: Vault Alignment`);
     const aligned = await alignToVault(result.entities, result.events, ctx.vault);
     row("Create", aligned.actions.filter(a => a.action === "create").length, "32");
@@ -376,7 +439,7 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
       }
     }
 
-    // Stop-after: alignment
+    // ─── 断点：对齐完成后暂停 ───
     if (opts.stopAfter === "alignment") {
       console.log(`\n   ⏸️  Stopped after alignment.`);
       console.log(`   Actions:`);
@@ -386,7 +449,7 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
       return;
     }
 
-    // Dedup check (report only)
+    // 去重检测（仅报告，不自动处理）
     if (result.pages.length > 0) {
       const newPages: WikiPage[] = result.pages.map((p: any) => ({
         title: p.frontmatter?.title ?? "untitled",
@@ -406,6 +469,7 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
       }
     }
 
+    // 干运行模式：只显示将要创建的目录结构
     if (opts.dryRun) {
       console.log(`\n   (dry-run: no files written)`);
       console.log(`\n   Would create batch:`);
@@ -418,7 +482,7 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
       continue;
     }
 
-    // Stage 4: Dispatch to Inbox
+    // ─── Stage 4: 分发到 Inbox ───
     console.log(`\n   📥 Stage 4: Inbox Dispatch`);
     const source: SourceDocument = {
       text: content,
@@ -448,8 +512,14 @@ async function handleFileIngest(targetPath: string, opts: any, ctx: any) {
   }
 }
 
-// ─── Legacy write (direct to --out) ────────────────────────────────
+// ─── 旧版写入（直接写入 --out 目录）────────────────────────────────
 
+/**
+ * @description 旧版写入模式，将生成的页面直接写入指定输出目录（跳过 Inbox）
+ * @param result - 内容提取结果
+ * @param opts - 命令行选项
+ * @param ctx - CLI 上下文
+ */
 async function writeLegacy(result: any, opts: any, ctx: any) {
   if (opts.dryRun) {
     console.log(`\n   (dry-run: no files written)`);
@@ -459,6 +529,7 @@ async function writeLegacy(result: any, opts: any, ctx: any) {
   const outDir = path.resolve(opts.out);
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
+  // 文档类型到子目录名的映射
   const typeDirMap: Record<string, string> = {
     entity: "entities",
     concept: "concepts",
@@ -468,7 +539,7 @@ async function writeLegacy(result: any, opts: any, ctx: any) {
     source: "sources",
   };
 
-  // Write stories
+  // 写入故事文件
   if (result.stories.length > 0) {
     const storiesDir = path.join(outDir, "stories");
     if (!fs.existsSync(storiesDir)) fs.mkdirSync(storiesDir, { recursive: true });
@@ -489,7 +560,7 @@ async function writeLegacy(result: any, opts: any, ctx: any) {
     }
   }
 
-  // Write entity/event/concept pages
+  // 写入实体/事件/概念等 wiki 页面
   for (const page of result.pages) {
     const fm = page.frontmatter ?? {};
     const typeDir = typeDirMap[fm.type] || "misc";
@@ -511,8 +582,9 @@ async function writeLegacy(result: any, opts: any, ctx: any) {
     console.log(`   💾 Written: ${typeDir}/${filename}`);
   }
 
-  // Create stub pages
+  // 创建桩页面（stub pages）：为所有提到但未生成的实体创建占位页面
   if (opts.createStubs) {
+    // 从所有页面和故事中提取 wikilinks
     const allWikilinks = new Set<string>();
     for (const page of result.pages) {
       const links = (page.content ?? "").match(/\[\[[^\]]+\]\]/g) || [];
@@ -529,11 +601,13 @@ async function writeLegacy(result: any, opts: any, ctx: any) {
       });
     }
 
+    // 收集已存在的页面标题
     const existingTitles = new Set(result.pages.map((p: any) => p.frontmatter?.title));
     for (const story of result.stories) {
       existingTitles.add(story.title);
     }
 
+    // 为不存在的链接目标创建桩页面
     let stubCount = 0;
     for (const linkName of allWikilinks) {
       if (!existingTitles.has(linkName)) {

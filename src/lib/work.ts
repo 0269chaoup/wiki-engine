@@ -1,19 +1,39 @@
+/**
+ * @file 工作任务管理逻辑模块
+ *
+ * 管理 Obsidian vault 中的工作任务文件（30-Projects/Work/ 目录）。
+ * 提供任务文件的创建、验证、索引生成、归档、规范化和报告功能。
+ *
+ * 核心概念：
+ * - Work 类型：仅支持 Task 和 TechNote 两种规范类型
+ * - 项目归属：通过目录结构确定（30-Projects/Work/{project}/）
+ * - 状态管理：🌱 Planned → 🌿 Active → 🚧 Blocked → 🍂 Completed → 🗃️ Archived
+ * - 规范化：自动修正旧类型、清理知识库专属字段、移动孤立文件
+ */
+
 import fs from "fs";
 import path from "path";
 import matter from "gray-matter";
 import { glob } from "glob";
 
-// ── Constants ───────────────────────────────────────────────────────────────
+// ── 常量定义 ───────────────────────────────────────────────────────────────
 
+/** Work 文件的根目录（相对于 vault 根目录） */
 const WORK_DIR = "30-Projects/Work";
 
-// Only Task + TechNote are valid Work types.
-// Other types are Knowledge types and should NOT appear in Work files.
+/**
+ * 有效的 Work 文件类型
+ * 仅 Task 和 TechNote 两种，其他类型均为知识库类型
+ */
 const VALID_WORK_TYPES = ["Task", "TechNote"];
 
-// Mapping for auto-normalization: old/inherited type → canonical Work type
+/**
+ * 类型规范化映射表
+ * 将旧类型/继承类型映射到规范的 Work 类型
+ * 知识库类型统一映射为 Task
+ */
 const TYPE_NORMALIZE_MAP: Record<string, string> = {
-  // Knowledge types → Task (they are work items, not reference material)
+  /** Work 相关旧类型 */
   WorkNote: "Task",
   ChangeNote: "TechNote",
   MeetingNote: "TechNote",
@@ -26,14 +46,17 @@ const TYPE_NORMALIZE_MAP: Record<string, string> = {
   Insight: "TechNote",
   Reference: "TechNote",
   Skill: "TechNote",
-  // Knowledge ontology types → Task (shouldn't be here at all)
+  /** 知识库本体类型（不应出现在 Work 文件中） */
   Concept: "Task",
   Story: "Task",
   Event: "Task",
   Entity: "Task",
 };
 
-// Fields that belong to Knowledge, NOT Work — should be stripped during normalization
+/**
+ * 知识库专属字段列表
+ * 这些字段属于知识库文件，在 Work 文件规范化时应被移除
+ */
 const KNOWLEDGE_ONLY_FIELDS = [
   "source",
   "related",
@@ -44,6 +67,7 @@ const KNOWLEDGE_ONLY_FIELDS = [
   "tags",
 ];
 
+/** 有效的 Work 文件状态值 */
 const VALID_WORK_STATUS = [
   "🌱 Planned",
   "🌿 Active",
@@ -52,7 +76,10 @@ const VALID_WORK_STATUS = [
   "🗃️ Archived",
 ];
 
-// Status order for sorting
+/**
+ * 状态排序优先级
+ * 用于索引文件中的状态分组排序
+ */
 const STATUS_ORDER = [
   "🚧 Blocked",
   "🌿 Active",
@@ -62,54 +89,115 @@ const STATUS_ORDER = [
   "未标注",
 ];
 
-// ── Interfaces ──────────────────────────────────────────────────────────────
+// ── 接口定义 ──────────────────────────────────────────────────────────────
 
+/**
+ * Work 文件接口
+ * 表示一个解析后的工作任务文件
+ */
 export interface WorkFile {
+  /** 相对于 vault 根目录的文件路径 */
   relativePath: string;
+  /** 所属项目名称（从目录结构推断） */
   project: string;
+  /** 文件标题 */
   title: string;
+  /** 文件类型（Task/TechNote） */
   type: string;
+  /** 状态 */
   status: string;
+  /** 创建日期 */
   created: string;
+  /** 阻塞原因（可选） */
   blocked_by?: string;
 }
 
+/**
+ * Work 验证问题接口
+ */
 export interface WorkValidationIssue {
+  /** 问题所在的文件路径 */
   file: string;
+  /** 严重程度：error（错误）或 warning（警告） */
   severity: "error" | "warning";
+  /** 问题涉及的字段 */
   field: string;
+  /** 问题详细描述 */
   detail: string;
 }
 
+/**
+ * Work 验证结果接口
+ */
 export interface WorkValidationResult {
+  /** 扫描的文件总数 */
   totalFiles: number;
+  /** 无问题的文件数 */
   clean: number;
+  /** 警告数量 */
   warnings: number;
+  /** 错误数量 */
   errors: number;
+  /** 所有问题列表 */
   issues: WorkValidationIssue[];
 }
 
+/**
+ * 项目摘要接口
+ * 汇总一个项目下所有 Work 文件的状态分布
+ */
 export interface ProjectSummary {
+  /** 项目名称 */
   name: string;
+  /** 文件数量 */
   fileCount: number;
+  /** 按状态分组的数量统计 */
   statusBreakdown: Record<string, number>;
+  /** 被阻塞的任务列表 */
   blockedItems: { file: string; blocked_by: string }[];
+  /** 项目下所有文件列表 */
   files: WorkFile[];
 }
 
+/**
+ * Work 报告接口
+ * 包含所有项目的汇总信息
+ */
 export interface WorkReport {
+  /** 文件总数 */
   totalFiles: number;
+  /** 项目总数 */
   totalProjects: number;
+  /** 各项目摘要列表 */
   projects: ProjectSummary[];
+  /** 孤立文件（不属于任何项目的文件） */
   orphanFiles: WorkFile[];
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
+/**
+ * @description 获取当天日期字符串（YYYY-MM-DD 格式）
+ * @returns 日期字符串
+ */
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * @description 解析单个 Work 文件为 WorkFile 对象
+ *
+ * 解析流程：
+ * 1. 读取文件内容
+ * 2. 使用 gray-matter 解析 frontmatter
+ * 3. 如果 YAML 解析失败，尝试修复常见问题后重试
+ * 4. 从目录结构推断项目名称
+ * 5. 提取标题、类型、状态等字段
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param relativePath - 文件相对于 vault 根目录的路径
+ * @returns 解析后的 WorkFile 对象，失败时返回 null
+ */
 function parseWorkFile(
   vaultRoot: string,
   relativePath: string
@@ -123,15 +211,16 @@ function parseWorkFile(
   try {
     ({ data } = matter(raw));
   } catch {
-    // Try to fix broken YAML before giving up
-    // 1. Fix source:: / related:: double colon
+    /** YAML 解析失败，尝试修复常见问题 */
+    /** 1. 修复 source:: 双冒号语法 */
     raw = raw.replace(/^source::\s*/gm, "source: ");
+    /** 2. 移除 related:: 内联元数据 */
     raw = raw.replace(/^related::\s*\n(?:\s+-\s+.+\n)*/gm, "");
-    // 2. Fix Windows paths: escape backslashes in double-quoted strings
+    /** 3. 修复 Windows 路径中的反斜杠 */
     raw = raw.replace(/: "([^"]*\\[^"]*)"/g, (_match: string, inner: string) => {
       return `: "${inner.replace(/\\/g, "\\\\")}"`;
     });
-    // 3. Fix duplicated mapping keys (second occurrence → rename)
+    /** 4. 修复重复的 YAML 映射键 */
     const seenKeys = new Set<string>();
     raw = raw.replace(/^(\w[\w-]*):/gm, (match: string, key: string) => {
       if (seenKeys.has(key)) return `_${key}:`;
@@ -145,6 +234,7 @@ function parseWorkFile(
     }
   }
 
+  /** 从目录结构推断项目名称 */
   const relFromWork = relativePath.replace(`${WORK_DIR}/`, "");
   const parts = relFromWork.split("/");
   const project = parts.length > 1 ? parts[0] : "General";
@@ -164,6 +254,12 @@ function parseWorkFile(
   };
 }
 
+/**
+ * @description 扫描 Work 目录下的所有 .md 文件并解析
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @returns 解析后的 WorkFile 数组
+ */
 async function scanWorkFiles(vaultRoot: string): Promise<WorkFile[]> {
   const exclude = [".obsidian", ".git", ".trash", "node_modules"];
   const pattern = `${WORK_DIR}/**/*.md`;
@@ -178,15 +274,29 @@ async function scanWorkFiles(vaultRoot: string): Promise<WorkFile[]> {
     .filter(Boolean) as WorkFile[];
 }
 
-// ── Create ──────────────────────────────────────────────────────────────────
+// ── 创建功能 ──────────────────────────────────────────────────────────────────
 
+/**
+ * 创建 Work 文件的选项接口
+ */
 export interface CreateWorkOptions {
+  /** 所属项目名称 */
   project: string;
+  /** 文件标题 */
   title: string;
+  /** 文件类型（默认 "Task"） */
   type?: string;
+  /** 初始状态（默认 "🌱 Planned"） */
   status?: string;
 }
 
+/**
+ * @description 创建新的 Work 文件
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param opts - 创建选项
+ * @returns 创建结果：文件路径和是否为新创建
+ */
 export function createWorkFile(
   vaultRoot: string,
   opts: CreateWorkOptions
@@ -195,6 +305,7 @@ export function createWorkFile(
   const status = opts.status ?? "🌱 Planned";
   const created = today();
 
+  /** 确定项目目录 */
   const projectDir =
     opts.project === "General"
       ? path.resolve(vaultRoot, WORK_DIR)
@@ -204,13 +315,16 @@ export function createWorkFile(
     fs.mkdirSync(projectDir, { recursive: true });
   }
 
+  /** 清理文件名中的非法字符 */
   const safeName = opts.title.replace(/[<>:"/\\|?*]/g, "_");
   const filePath = path.join(projectDir, `${safeName}.md`);
 
+  /** 文件已存在则不覆盖 */
   if (fs.existsSync(filePath)) {
     return { filePath: path.relative(vaultRoot, filePath), created: false };
   }
 
+  /** 构建文件内容 */
   const fm = [
     "---",
     `title: "${opts.title}"`,
@@ -230,8 +344,20 @@ export function createWorkFile(
   return { filePath: path.relative(vaultRoot, filePath), created: true };
 }
 
-// ── Validate ────────────────────────────────────────────────────────────────
+// ── 验证功能 ────────────────────────────────────────────────────────────────
 
+/**
+ * @description 验证所有 Work 文件的 frontmatter 和结构
+ *
+ * 检查项：
+ * - type 字段：必须存在且为规范类型（Task/TechNote）
+ * - status 字段：是否存在
+ * - created 字段：是否存在
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param opts - 选项：project（按项目过滤）
+ * @returns 验证结果
+ */
 export async function validateWork(
   vaultRoot: string,
   opts?: { project?: string }
@@ -245,7 +371,7 @@ export async function validateWork(
   const issues: WorkValidationIssue[] = [];
 
   for (const f of files) {
-    // Type check — must exist and be canonical (Task or TechNote)
+    /** 类型检查 */
     if (!f.type) {
       issues.push({
         file: f.relativePath,
@@ -263,7 +389,7 @@ export async function validateWork(
       });
     }
 
-    // Status check
+    /** 状态检查 */
     if (!f.status) {
       issues.push({
         file: f.relativePath,
@@ -273,7 +399,7 @@ export async function validateWork(
       });
     }
 
-    // Created check
+    /** 创建日期检查 */
     if (!f.created) {
       issues.push({
         file: f.relativePath,
@@ -296,16 +422,26 @@ export async function validateWork(
   };
 }
 
-// ── Index ───────────────────────────────────────────────────────────────────
+// ── 索引生成功能 ───────────────────────────────────────────────────────────
 
+/**
+ * @description 为每个项目生成 INDEX.md 索引文件
+ *
+ * 索引文件按状态分组列出所有 Work 文件，
+ * 状态按优先级排序：Blocked → Active → Planned → Completed → Archived。
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param opts - 选项：project（只生成指定项目的索引）
+ * @returns 生成的索引文件列表
+ */
 export async function generateIndex(
   vaultRoot: string,
   opts?: { project?: string }
 ): Promise<{ project: string; filePath: string; fileCount: number }[]> {
   const files = await scanWorkFiles(vaultRoot);
-  const results: { project: string; filePath: string; fileCount: number }[] =
-    [];
+  const results: { project: string; filePath: string; fileCount: number }[] = [];
 
+  /** 按项目分组 */
   const byProject = new Map<string, WorkFile[]>();
   for (const f of files) {
     if (opts?.project && f.project !== opts.project) continue;
@@ -326,7 +462,7 @@ export async function generateIndex(
 
     const indexPath = path.join(indexDir, "INDEX.md");
 
-    // Group files by status
+    /** 按状态分组 */
     const byStatus = new Map<string, WorkFile[]>();
     for (const f of projectFiles) {
       const st = f.status || "未标注";
@@ -335,7 +471,7 @@ export async function generateIndex(
       byStatus.set(st, existing);
     }
 
-    // Build INDEX content
+    /** 构建索引文件内容 */
     const lines: string[] = [
       "---",
       `title: "${project} 项目索引"`,
@@ -352,6 +488,7 @@ export async function generateIndex(
       "",
     ];
 
+    /** 按状态优先级排序 */
     const sortedStatuses = [...byStatus.entries()].sort(
       (a, b) => STATUS_ORDER.indexOf(a[0]) - STATUS_ORDER.indexOf(b[0])
     );
@@ -359,6 +496,7 @@ export async function generateIndex(
     for (const [status, statusFiles] of sortedStatuses) {
       lines.push(`## ${status} (${statusFiles.length})`);
       lines.push("");
+      /** 按创建日期降序排列 */
       for (const f of statusFiles.sort(
         (a, b) => String(b.created || "").localeCompare(String(a.created || ""))
       )) {
@@ -383,8 +521,21 @@ export async function generateIndex(
   return results;
 }
 
-// ── Archive with Compaction ─────────────────────────────────────────────────
+// ── 归档与压实功能 ─────────────────────────────────────────────────────────
 
+/**
+ * @description 归档整个项目（支持可选的内容压实）
+ *
+ * 归档流程：
+ * 1. 将所有非 Archived 状态的文件标记为 "🗃️ Archived"
+ * 2. 如果启用 compact，收集所有 TechNote 内容
+ * 3. 生成 POSTMORTEM 复盘文件（包含所有 TechNote 的压实内容）
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param projectName - 项目名称
+ * @param opts - 选项：compact（是否压实 TechNote）
+ * @returns 归档统计结果
+ */
 export async function archiveProject(
   vaultRoot: string,
   projectName: string,
@@ -402,7 +553,7 @@ export async function archiveProject(
   let skipped = 0;
   let compacted = 0;
 
-  // Collect TechNotes for compaction
+  /** 收集 TechNote 内容用于压实 */
   const techNotes: { title: string; content: string }[] = [];
 
   for (const f of projectFiles) {
@@ -425,24 +576,26 @@ export async function archiveProject(
       continue;
     }
 
+    /** 已归档的文件跳过 */
     if (data.status === "🗃️ Archived") {
       skipped++;
       continue;
     }
 
-    // Compaction: collect TechNotes before archiving
+    /** 压实模式：收集 TechNote 内容 */
     if (opts?.compact && f.type === "TechNote") {
       techNotes.push({ title: f.title, content });
       compacted++;
     }
 
+    /** 更新状态为已归档 */
     data.status = "🗃️ Archived";
     const newRaw = matter.stringify(content, data);
     fs.writeFileSync(abs, newRaw, "utf-8");
     archived++;
   }
 
-  // Generate post-mortem if compacting
+  /** 生成复盘文件（如果启用压实且有 TechNote） */
   let postMortemPath: string | undefined;
   if (opts?.compact && techNotes.length > 0) {
     const projectDir =
@@ -491,16 +644,30 @@ export async function archiveProject(
   };
 }
 
-// ── Task ────────────────────────────────────────────────────────────────────
+// ── 任务清单功能 ────────────────────────────────────────────────────────────
 
+/**
+ * 任务分组接口
+ * 用于构建 Obsidian 的 task callout 块
+ */
 export interface TaskGroup {
+  /** 分组名称 */
   name: string;
+  /** 分类列表 */
   categories: {
+    /** 分类名称 */
     name: string;
+    /** 任务列表 */
     tasks: { text: string; done: boolean }[];
   }[];
 }
 
+/**
+ * @description 将任务分组构建为 Obsidian task callout 格式
+ *
+ * @param groups - 任务分组数组
+ * @returns 格式化的 callout Markdown 内容
+ */
 export function buildTaskCallout(groups: TaskGroup[]): string {
   const lines: string[] = [];
 
@@ -519,6 +686,13 @@ export function buildTaskCallout(groups: TaskGroup[]): string {
   return lines.join("\n");
 }
 
+/**
+ * @description 创建包含任务清单的 Work 文件
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param opts - 选项：project、title、groups
+ * @returns 创建结果
+ */
 export function createTaskNote(
   vaultRoot: string,
   opts: {
@@ -565,8 +739,21 @@ export function createTaskNote(
   return { filePath: path.relative(vaultRoot, filePath), created: true };
 }
 
-// ── Fix Frontmatter ─────────────────────────────────────────────────────────
+// ── Frontmatter 修复功能 ─────────────────────────────────────────────────────────
 
+/**
+ * @description 修复 Work 文件的 frontmatter 问题
+ *
+ * 修复项：
+ * - 补充缺失的 type、project、status、created 字段
+ * - 迁移旧状态值（🌱 Seed → 🌱 Planned 等）
+ * - 移除不属于 Work 的字段（domain、tags）
+ * - 修复损坏的 YAML 语法
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param opts - 选项：project（按项目过滤）、dryRun（模拟运行）
+ * @returns 修复结果列表
+ */
 export async function fixWorkFrontmatter(
   vaultRoot: string,
   opts?: { project?: string; dryRun?: boolean }
@@ -592,6 +779,7 @@ export async function fixWorkFrontmatter(
       try {
         ({ data } = matter(raw));
       } catch {
+        /** 尝试修复损坏的 YAML */
         raw = raw.replace(/^source::\s*/gm, "source: ");
         raw = raw.replace(/^related::\s*\n(?:\s+-\s+.+\n)*/gm, "");
         try {
@@ -608,19 +796,19 @@ export async function fixWorkFrontmatter(
 
     const changes: Record<string, unknown> = { ...data };
 
-    // Fix type
+    /** 补充缺失的 type 字段 */
     if (!changes.type) {
       changes.type = "Task";
       fixes.push("added type: Task");
     }
 
-    // Fix project
+    /** 补充缺失的 project 字段 */
     if (!changes.project) {
       changes.project = f.project;
       fixes.push(`added project: ${f.project}`);
     }
 
-    // Fix status — migrate old values
+    /** 修复状态值：迁移旧格式 */
     const statusMap: Record<string, string> = {
       "🌱 Seed": "🌱 Planned",
       "🌿 Growing": "🌿 Active",
@@ -635,14 +823,14 @@ export async function fixWorkFrontmatter(
       fixes.push(`status: ${old} → ${changes.status}`);
     }
 
-    // Fix created
+    /** 补充缺失的 created 字段 */
     if (!changes.created) {
       const stat = fs.statSync(abs);
       changes.created = stat.birthtime.toISOString().slice(0, 10);
       fixes.push(`added created: ${changes.created}`);
     }
 
-    // Remove old domain/tags if present (migration from old format)
+    /** 移除不属于 Work 的字段 */
     if (changes.domain) {
       delete changes.domain;
       fixes.push("removed domain (Work不需要)");
@@ -654,6 +842,7 @@ export async function fixWorkFrontmatter(
 
     if (fixes.length === 0) continue;
 
+    /** 写回修复后的文件 */
     if (!opts?.dryRun) {
       const fmLines = ["---"];
       for (const [key, val] of Object.entries(changes)) {
@@ -689,14 +878,36 @@ export async function fixWorkFrontmatter(
   return results;
 }
 
-// ── Normalize ──────────────────────────────────────────────────────────────
+// ── 规范化功能 ──────────────────────────────────────────────────────────────
 
+/**
+ * 规范化结果接口
+ */
 export interface NormalizeResult {
+  /** 文件路径 */
   file: string;
+  /** 变更列表 */
   changes: string[];
-  moved?: string; // new relative path if file was relocated
+  /** 如果文件被移动，记录新路径 */
+  moved?: string;
 }
 
+/**
+ * @description 规范化所有 Work 文件
+ *
+ * 规范化操作：
+ * 1. 修复损坏的 YAML 语法
+ * 2. 将非规范类型映射为 Task/TechNote
+ * 3. 移除知识库专属字段（source、domain、tags 等）
+ * 4. 将 date 字段迁移到 created
+ * 5. 格式化 created 日期为 YYYY-MM-DD
+ * 6. 确保 project 字段与目录结构一致
+ * 7. 将孤立文件移动到正确的项目目录
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @param opts - 选项：project（按项目过滤）、dryRun（模拟运行）
+ * @returns 规范化结果列表
+ */
 export async function normalizeWorkFiles(
   vaultRoot: string,
   opts?: { project?: string; dryRun?: boolean }
@@ -715,30 +926,29 @@ export async function normalizeWorkFiles(
     let raw = fs.readFileSync(abs, "utf-8");
     const changes: string[] = [];
 
-    // 1. Parse frontmatter (with broken-YAML recovery)
+    /** 步骤 1：解析 frontmatter（带损坏修复） */
     let data: Record<string, unknown>;
     try {
       ({ data } = matter(raw));
     } catch {
-      // Attempt same fix as fixWorkFrontmatter
       raw = raw.replace(/^source::\s*/gm, "source: ");
       raw = raw.replace(/^related::\s*\n(?:\s+-\s+.+\n)*/gm, "");
       try {
         ({ data } = matter(raw));
         changes.push("fixed broken YAML");
       } catch {
-        continue; // skip unparseable
+        continue; // 跳过无法解析的文件
       }
     }
 
-    // 2. Normalize type → Task or TechNote
+    /** 步骤 2：规范化类型为 Task 或 TechNote */
     if (data.type && !VALID_WORK_TYPES.includes(String(data.type))) {
       const mapped = TYPE_NORMALIZE_MAP[String(data.type)] ?? "Task";
       changes.push(`type: ${data.type} → ${mapped}`);
       data.type = mapped;
     }
 
-    // 3. Strip Knowledge-only fields
+    /** 步骤 3：移除知识库专属字段 */
     for (const field of KNOWLEDGE_ONLY_FIELDS) {
       if (data[field] !== undefined) {
         delete data[field];
@@ -746,10 +956,9 @@ export async function normalizeWorkFiles(
       }
     }
 
-    // 4. Normalize `date:` → `created:` (keep the value)
+    /** 步骤 4：迁移 date → created */
     if (data.date && !data.created) {
       const dateVal = String(data.date);
-      // Try to parse into YYYY-MM-DD
       const parsed = new Date(dateVal);
       if (!isNaN(parsed.getTime())) {
         data.created = parsed.toISOString().slice(0, 10);
@@ -759,12 +968,12 @@ export async function normalizeWorkFiles(
       delete data.date;
       changes.push(`date → created: ${data.created}`);
     } else if (data.date && data.created) {
-      // Both exist — remove `date`
+      /** 两者都存在时移除 date */
       delete data.date;
       changes.push("removed redundant date (kept created)");
     }
 
-    // 5. Format created as YYYY-MM-DD if it's a long date string
+    /** 步骤 5：格式化 created 日期 */
     if (data.created && typeof data.created === "string") {
       const c = data.created;
       if (c.includes("GMT") || c.includes("T")) {
@@ -779,19 +988,17 @@ export async function normalizeWorkFiles(
       }
     }
 
-    // 6. Ensure project field matches directory
+    /** 步骤 6：确保 project 字段与目录一致 */
     if (!data.project) {
       data.project = f.project;
       changes.push(`added project: ${f.project}`);
     } else if (data.project !== f.project) {
-      // Directory says one thing, frontmatter says another
-      // Keep frontmatter value but warn
       changes.push(`project mismatch: dir=${f.project}, fm=${data.project}`);
     }
 
     if (changes.length === 0) continue;
 
-    // 7. Write back
+    /** 步骤 7：写回文件 */
     if (!opts?.dryRun) {
       const content = matter.stringify(raw, data);
       fs.writeFileSync(abs, content, "utf-8");
@@ -800,8 +1007,7 @@ export async function normalizeWorkFiles(
     results.push({ file: f.relativePath, changes });
   }
 
-  // 8. Move orphan files (root-level, project=General) into project dirs
-  // Only if they clearly belong to a project based on filename
+  /** 步骤 8：移动孤立文件到正确的项目目录 */
   const orphans = targetFiles.filter(
     (f) => f.project === "General" && !f.relativePath.endsWith("INDEX.md")
   );
@@ -810,7 +1016,6 @@ export async function normalizeWorkFiles(
     const abs = path.resolve(vaultRoot, f.relativePath);
     if (!fs.existsSync(abs)) continue;
 
-    // Read frontmatter to check if project field exists
     let raw: string;
     try {
       raw = fs.readFileSync(abs, "utf-8");
@@ -825,7 +1030,7 @@ export async function normalizeWorkFiles(
       continue;
     }
 
-    // If frontmatter has a specific project, move the file there
+    /** 如果 frontmatter 中指定了具体项目，移动文件 */
     if (data.project && data.project !== "General") {
       const targetDir = path.resolve(vaultRoot, WORK_DIR, String(data.project));
       const targetPath = path.join(targetDir, path.basename(f.relativePath));
@@ -855,8 +1060,16 @@ export async function normalizeWorkFiles(
   return results;
 }
 
-// ── Report ──────────────────────────────────────────────────────────────────
+// ── 报告生成功能 ──────────────────────────────────────────────────────────
 
+/**
+ * @description 生成 Work 文件的汇总报告
+ *
+ * 按项目分组统计文件数量、状态分布和阻塞情况。
+ *
+ * @param vaultRoot - vault 根目录路径
+ * @returns Work 报告
+ */
 export async function generateReport(
   vaultRoot: string
 ): Promise<WorkReport> {
@@ -898,6 +1111,7 @@ export async function generateReport(
     });
   }
 
+  /** 按文件数量降序排列 */
   projects.sort((a, b) => b.fileCount - a.fileCount);
 
   return {

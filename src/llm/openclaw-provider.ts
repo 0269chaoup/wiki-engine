@@ -210,7 +210,7 @@ export class OpenClawProvider implements LLMProvider {
       baseUrl: prov.baseUrl.replace(/\/+$/, ""),
       apiKey,
       headers: prov.headers,
-      maxTokens: 16384,
+      maxTokens: 32768,
     };
   }
 

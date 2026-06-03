@@ -372,7 +372,7 @@ function buildDailyLogEntry(batchId: string, result: ArchiveResult): string {
     .map(([t, n]) => `${t}×${n}`)
     .join(", ");
 
-  return `- \\`[Agent:Helios]\\` 归档 [[${batchId}]] → Permanent (${typeSummary}) #agent-change`;
+  return `- \`[Agent:Helios]\` 归档 [[${batchId}]] → Permanent (${typeSummary}) #agent-change`;
 }
 
 /**

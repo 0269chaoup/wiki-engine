@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * @file wiki-engine CLI 入口文件
  *
@@ -8,8 +9,6 @@
  *
  * 使用 commander 库构建 CLI 框架。
  */
-
-#!/usr/bin/env node
 import { Command } from "commander";
 import { graphCommand } from "./commands/graph.js";
 import { connectCommand } from "./commands/connect.js";

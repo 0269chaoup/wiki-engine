@@ -174,7 +174,7 @@ export const ENTITY_PROMPT = (item: { name: string; description: string; tags: s
 
 实体名称：${item.name}
 初步描述：${item.description}
-标签：${item.tags.join(", ")}
+标签：${item.tags?.join(", ")}
 
 ## 源材料（必须从中提取原文考据）：
 ---
@@ -228,7 +228,7 @@ export const EVENT_PROMPT = (item: { name: string; description: string; tags: st
 时间：${item.time || "未知"}
 地点：${item.location || "未知"}
 参与者：${item.participants?.join(", ") || "未知"}
-标签：${item.tags.join(", ")}
+标签：${item.tags?.join(", ")}
 
 ## 源材料（必须从中提取原文考据）：
 ---
@@ -279,7 +279,7 @@ export const CONCEPT_PROMPT = (item: { name: string; description: string; tags: 
 
 概念名称：${item.name}
 初步描述：${item.description}
-标签：${item.tags.join(", ")}
+标签：${item.tags?.join(", ")}
 
 ## 源材料（必须从中提取原文考据）：
 ---

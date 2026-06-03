@@ -12,6 +12,7 @@ import { Command } from "commander";
 import fs from "fs";
 import path from "path";
 import { buildContext, requireLLM, row } from "../lib/cli-utils.js";
+import { parseJSON } from "../llm/provider.js";
 import { ingestText, buildAnalyzePrompt } from "../lib/ingest.js";
 import { dedupScan } from "../lib/dedup.js";
 import { clipWebPage } from "../lib/clip.js";
@@ -255,49 +256,66 @@ async function handleFinalize(opts: any, ctx: any) {
 
   // ─── Stage 3: 页面生成 ───
   // 使用 LLM 为每个实体/概念/事件生成 wiki 页面
-  console.log("\n   📝 Stage 3: Page Generation");
-  // 截断过长的源材料以控制 token 用量
-  const truncatedSource = extraction.source.text.length > 8000
-    ? extraction.source.text.slice(0, 8000) + "\n\n[... 源材料已截断 ...]"
-    : extraction.source.text;
-
   const pages: { frontmatter: Record<string, any>; content: string }[] = [];
 
-  // 为实体和概念生成页面
-  for (const item of aligned.items) {
-    try {
-      const { CONCEPT_PROMPT, ENTITY_PROMPT, GENERATE_SYSTEM } = await import("../lib/ingest.js");
-      const itemType = item.type === "concept" ? "concept" : "entity";
-      const prompt = itemType === "concept"
-        ? CONCEPT_PROMPT({ name: item.name, description: item.description, tags: item.tags }, truncatedSource)
-        : ENTITY_PROMPT({ name: item.name, description: item.description, tags: item.tags }, truncatedSource);
-      const pageRaw = await llm.complete(prompt, GENERATE_SYSTEM);
-      const page = JSON.parse(pageRaw.content);
-      if (page.frontmatter) page.frontmatter.title = item.name;
-      pages.push(page);
-    } catch (e) {
-      console.error(`   ❌ Page generation failed for ${item.name}: ${(e as Error).message}`);
+  if (opts.pages === false) {
+    // --no-pages: 生成 stub 页面（仅 frontmatter + description）
+    console.log("\n   📝 Stage 3: Stub Pages (--no-pages)");
+    for (const item of aligned.items) {
+      pages.push({
+        frontmatter: { title: item.name, type: item.type === "concept" ? "concept" : "entity", tags: item.tags ?? [], aliases: [] },
+        content: `# ${item.name}\n\n${item.description ?? ""}`,
+      });
     }
-  }
+    for (const event of aligned.events) {
+      pages.push({
+        frontmatter: { title: event.name, type: "event", tags: event.tags ?? [], aliases: [] },
+        content: `# ${event.name}\n\n${event.description ?? ""}`,
+      });
+    }
+  } else {
+    console.log("\n   📝 Stage 3: Page Generation");
+    // 截断过长的源材料以控制 token 用量
+    const truncatedSource = extraction.source.text.length > 8000
+      ? extraction.source.text.slice(0, 8000) + "\n\n[... 源材料已截断 ...]"
+      : extraction.source.text;
 
-  // 为事件生成页面
-  for (const event of aligned.events) {
-    try {
-      const { EVENT_PROMPT, GENERATE_SYSTEM } = await import("../lib/ingest.js");
-      const prompt = EVENT_PROMPT({
-        name: event.name,
-        description: event.description,
-        tags: event.tags,
-        time: event.time,
-        location: event.location,
-        participants: event.participants,
-      }, truncatedSource);
-      const pageRaw = await llm.complete(prompt, GENERATE_SYSTEM);
-      const page = JSON.parse(pageRaw.content);
-      if (page.frontmatter) page.frontmatter.title = event.name;
-      pages.push(page);
-    } catch (e) {
-      console.error(`   ❌ Page generation failed for ${event.name}: ${(e as Error).message}`);
+    // 为实体和概念生成页面
+    for (const item of aligned.items) {
+      try {
+        const { CONCEPT_PROMPT, ENTITY_PROMPT, GENERATE_SYSTEM } = await import("../lib/ingest.js");
+        const itemType = item.type === "concept" ? "concept" : "entity";
+        const prompt = itemType === "concept"
+          ? CONCEPT_PROMPT({ name: item.name, description: item.description, tags: item.tags }, truncatedSource)
+          : ENTITY_PROMPT({ name: item.name, description: item.description, tags: item.tags }, truncatedSource);
+        const pageRaw = await llm.complete(prompt, GENERATE_SYSTEM);
+        const page = parseJSON(pageRaw.content);
+        if (page.frontmatter) page.frontmatter.title = item.name;
+        pages.push(page);
+      } catch (e) {
+        console.error(`   ❌ Page generation failed for ${item.name}: ${(e as Error).message}`);
+      }
+    }
+
+    // 为事件生成页面
+    for (const event of aligned.events) {
+      try {
+        const { EVENT_PROMPT, GENERATE_SYSTEM } = await import("../lib/ingest.js");
+        const prompt = EVENT_PROMPT({
+          name: event.name,
+          description: event.description,
+          tags: event.tags,
+          time: event.time,
+          location: event.location,
+          participants: event.participants,
+        }, truncatedSource);
+        const pageRaw = await llm.complete(prompt, GENERATE_SYSTEM);
+        const page = parseJSON(pageRaw.content);
+        if (page.frontmatter) page.frontmatter.title = event.name;
+        pages.push(page);
+      } catch (e) {
+        console.error(`   ❌ Page generation failed for ${event.name}: ${(e as Error).message}`);
+      }
     }
   }
 

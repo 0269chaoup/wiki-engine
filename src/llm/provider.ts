@@ -60,18 +60,41 @@ export function parseJSON<T = any>(text: string): T {
   let cleaned = text.trim();
 
   /** 尝试提取 Markdown 代码块中的内容 */
-  const m = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (m) cleaned = m[1].trim();
+  const m = cleaned.match(/```(?:json)?\s*([\s\S]*)```\s*$/);
+  if (m) {
+    cleaned = m[1].trim();
+  } else if (cleaned.startsWith("```json") || cleaned.startsWith("```")) {
+    // Strip opening ``` line (no matching closing ``` — truncated response)
+    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, "");
+    // Try to find a valid JSON object by brace matching
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let lastValid = -1;
+    for (let i = 0; i < cleaned.length; i++) {
+      const ch = cleaned[i];
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") { depth--; if (depth === 0) { lastValid = i; break; } }
+    }
+    if (lastValid >= 0) cleaned = cleaned.slice(0, lastValid + 1);
+  }
 
   /** 先尝试直接解析 */
   try { return JSON.parse(cleaned); } catch {}
 
   /** 尝试在文本中查找 JSON 对象或数组 */
-  const objMatch = cleaned.match(/[\[{][\s\S]*[\]]/);
+  const objMatch = cleaned.match(/\{[\s\S]*\}/);
   if (objMatch) {
     try { return JSON.parse(objMatch[0]); } catch {}
   }
 
   /** 所有尝试均失败，抛出错误并附带部分原文 */
+  // Debug: log response shape
+  console.error(`[parseJSON debug] startsWith backtick: ${text.trim().startsWith('`')}, length: ${text.length}, has closing \`\`\`: ${text.includes('\`\`\`')}`);
+  console.error(`[parseJSON debug] last 100 chars: ${JSON.stringify(text.slice(-100))}`);
   throw new Error(`Failed to parse JSON from LLM response:\n${text.slice(0, 500)}`);
 }

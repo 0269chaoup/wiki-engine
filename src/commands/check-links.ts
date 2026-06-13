@@ -5,7 +5,7 @@
  */
 import { Command } from "commander";
 import { buildContext, row } from "../lib/cli-utils.js";
-import { checkLinks } from "@hermes/vault-utils";
+import { checkLinks } from "../lib/check-links.js";
 
 /**
  * @description 创建 check-links 子命令

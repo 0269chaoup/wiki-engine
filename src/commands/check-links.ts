@@ -1,7 +1,7 @@
 /**
  * @file check-links.ts
  * @description MOC 双链检查命令
- * 委托给 @hermes/vault-utils 的 checkLinks 实现。
+ * 扫描指定目录中的 markdown 文件，检测 broken wikilinks。
  */
 import { Command } from "commander";
 import { buildContext, row } from "../lib/cli-utils.js";

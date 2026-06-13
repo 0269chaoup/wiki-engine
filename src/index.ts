@@ -21,6 +21,9 @@ import { validateCommand } from "./commands/validate.js";
 import { createCommand } from "./commands/create.js";
 import { fixFrontmatterCommand } from "./commands/fix-frontmatter.js";
 import { archiveCommand } from "./commands/archive.js";
+import { searchCommand } from "./commands/search.js";
+import { checkLinksCommand } from "./commands/check-links.js";
+import { backlinkScanCommand } from "./commands/backlink-scan.js";
 
 /** 创建 CLI 程序实例 */
 const program = new Command();
@@ -59,6 +62,9 @@ program.addCommand(validateCommand());   /** 内容验证 */
 program.addCommand(createCommand());     /** 创建新页面 */
 program.addCommand(fixFrontmatterCommand()); /** 修复 frontmatter */
 program.addCommand(archiveCommand());    /** Inbox→Permanent 归档 */
+program.addCommand(searchCommand());     /** Vault 搜索 */
+program.addCommand(checkLinksCommand()); /** MOC 双链检查 */
+program.addCommand(backlinkScanCommand()); /** 双链补全扫描 */
 
 /** 启动命令行参数解析 */
 program.parse();

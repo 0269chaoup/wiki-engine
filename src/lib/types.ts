@@ -58,6 +58,10 @@ export interface WikiPage {
   filePath: string;
   /** 页面中包含的 wikilink 目标列表 */
   wikilinks: string[];
+  /** 知识域（如 "AI与大模型"、"计算机图形学"），从 frontmatter domain 字段提取 */
+  domain?: string;
+  /** 状态标签（如 "🌲 Evergreen"、"📥 待学习"），从 frontmatter status 字段提取 */
+  status?: string;
 }
 
 /**

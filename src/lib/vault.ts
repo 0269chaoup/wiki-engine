@@ -108,6 +108,9 @@ export class VaultReader {
       /** 提取标签和别名列表 */
       const tags: string[] = data.tags ?? [];
       const aliases: string[] = data.aliases ?? [];
+      /** 提取知识域和状态（可选字段） */
+      const domain: string | undefined = data.domain ?? undefined;
+      const status: string | undefined = data.status ?? undefined;
 
       /** 使用正则表达式提取所有 wikilink 目标 */
       const wikilinks: string[] = [];
@@ -117,7 +120,7 @@ export class VaultReader {
         wikilinks.push(m[1].trim());
       }
 
-      return { title, type, tags, aliases, content, filePath: relativePath, wikilinks };
+      return { title, type, tags, aliases, content, filePath: relativePath, wikilinks, domain, status };
     } catch {
       return null;
     }
